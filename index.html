@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DailyStockFinder - KRX 1,000대 종목 전수 분석 & 오늘의 추천 주식 TOP 5</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-wrapper">
+    <!-- Top Navigation / Header -->
+    <header class="top-header">
+      <div class="brand-box">
+        <div class="brand-logo" aria-hidden="true">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"></polyline>
+            <polyline points="16 7 22 7 22 13"></polyline>
+          </svg>
+        </div>
+        <div>
+          <div class="brand-title-row">
+            <h1>DailyStockFinder</h1>
+            <span class="ai-pill">KRX 1,000대 종목 전수 스크리닝</span>
+          </div>
+          <p class="brand-sub">
+            분석 모집단: <strong>KRX 시가총액 상위 1,000대 보통주 (KOSPI 500종목 + KOSDAQ 500종목 · 총 65,000개 실제 일봉 캔들)</strong>
+          </p>
+        </div>
+      </div>
+
+      <div class="header-controls">
+        <div class="market-summary-bar">
+          <div class="index-chip">
+            <span class="idx-name">KOSPI</span>
+            <span class="idx-val" id="kospiIndex">5,290.53</span>
+            <span class="idx-chg down" id="kospiChange">▼ 52.20 (-0.98%)</span>
+          </div>
+          <div class="index-chip">
+            <span class="idx-name">KOSDAQ</span>
+            <span class="idx-val" id="kosdaqIndex">699.66</span>
+            <span class="idx-chg up" id="kosdaqChange">▲ 3.13 (+0.45%)</span>
+          </div>
+        </div>
+
+        <div class="action-group">
+          <div class="live-status">
+            <span class="live-dot" id="liveDot"></span>
+            <span id="updateTimeText">KRX 1,000종목 실거래 시세 적용</span>
+          </div>
+          <button id="liveToggleBtn" class="btn btn-outline" title="네이버 증권 실시간 시세 자동 폴링(12초 주기)을 켜거나 끕니다">
+            자동 시세연동: ON
+          </button>
+          <button id="refreshBtn" class="btn btn-primary">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+              <path d="M3 3v5h5"></path>
+              <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"></path>
+              <path d="M16 16h5v5"></path>
+            </svg>
+            실시간 시세 동기화
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Strategy & Search Control Bar -->
+    <section class="control-bar">
+      <div class="strategy-tabs" role="tablist" aria-label="추천 전략 선택">
+        <button class="strategy-tab active" data-strategy="all">
+          <span class="tab-dot all"></span>종합 퀀트 TOP 5 <span class="tab-count" id="cnt-all">1,000</span>
+        </button>
+        <button class="strategy-tab" data-strategy="breakout">
+          <span class="tab-dot breakout"></span>골든크로스 · 추세돌파 <span class="tab-count" id="cnt-breakout">-</span>
+        </button>
+        <button class="strategy-tab" data-strategy="pullback">
+          <span class="tab-dot pullback"></span>이평선 눌림목 지지 <span class="tab-count" id="cnt-pullback">-</span>
+        </button>
+        <button class="strategy-tab" data-strategy="volume">
+          <span class="tab-dot volume"></span>거래량 · 수급 폭발 <span class="tab-count" id="cnt-volume">-</span>
+        </button>
+        <button class="strategy-tab" data-strategy="oversold">
+          <span class="tab-dot oversold"></span>과매도 반등 시그널 <span class="tab-count" id="cnt-oversold">-</span>
+        </button>
+      </div>
+
+      <div class="market-filter-group">
+        <!-- Autocomplete Search Input across 1,000 Stocks -->
+        <div class="search-wrapper">
+          <input
+            type="text"
+            id="stockSearchInput"
+            class="search-input"
+            placeholder="🔍 1,000대 종목명·코드 검색 (예: 삼성, 한화)"
+            autocomplete="off"
+          >
+          <div id="searchDropdown" class="search-dropdown hidden"></div>
+        </div>
+
+        <label for="marketSelect" class="sr-only">대상 시장</label>
+        <select id="marketSelect" class="select-box" title="스크리닝 대상 시장 및 규모 선택">
+          <option value="ALL">모집단: KRX 1,000 전체 (KOSPI 500 + KOSDAQ 500)</option>
+          <option value="KOSPI">모집단: KOSPI 시총 상위 500종목</option>
+          <option value="KOSDAQ">모집단: KOSDAQ 시총 상위 500종목</option>
+          <option value="TOP200">모집단: 대형 우량주 (KOSPI 100 + KOSDAQ 100)</option>
+        </select>
+
+        <label for="sectorSelect" class="sr-only">대상 섹터</label>
+        <select id="sectorSelect" class="select-box" title="특정 업종/섹터만 필터링하여 조회">
+          <option value="ALL">전체 섹터 (업종 가감점 자동반영)</option>
+        </select>
+
+        <button id="openAllModalBtn" class="btn btn-outline">
+          📊 1,000종목 전체 순위표
+        </button>
+
+        <button id="weightToggleBtn" class="btn btn-subtle">
+          ⚙ 가중치·섹터 설정
+        </button>
+      </div>
+    </section>
+
+    <!-- Live Sector Momentum & Bonus/Penalty Strip -->
+    <section class="sector-strip-card" aria-label="실시간 섹터별 수급 강도 및 가감점 현황">
+      <div class="sector-strip-header">
+        <div class="sector-strip-title">
+          <span class="sector-pulse-dot"></span>
+          <strong>실시간 KRX 14대 섹터 수급 모멘텀 & 자동 가감점 현황</strong>
+          <span class="sector-strip-sub">업종별 평균 등락률·상승확산도(Breadth)·거래량 수급·20일선 안착률을 합산해 주도 섹터 가산점 및 소외 섹터 감점을 부여합니다 (클릭 시 해당 섹터 필터링)</span>
+        </div>
+        <div class="sector-strip-actions">
+          <button id="resetSectorFilterBtn" class="btn btn-subtle btn-xs hidden">필터 해제 (전체 보기)</button>
+          <button id="toggleSectorExpandBtn" class="btn btn-outline btn-xs">전체 14개 섹터 펼치기 ▼</button>
+        </div>
+      </div>
+      <div id="sectorMomentumBar" class="sector-chips-grid">
+        <!-- Populated dynamically by script.js -->
+      </div>
+    </section>
+
+    <!-- Collapsible Algorithm Weight Customizer -->
+    <section id="weightPanel" class="weight-panel hidden">
+      <div class="weight-panel-inner">
+        <div class="weight-info">
+          <h3>퀀트 스코어링 & 섹터 가감점 가중치 조절 (KRX 1,000종목 실시간 재산출)</h3>
+          <p>4대 기술적 팩터 비중과 <strong>섹터 수급 가감점 반영 강도(0%~200%)</strong> 및 아래 섹터별 추가 가감점을 조절하면 1,000종목 점수를 즉시 재계산합니다.</p>
+        </div>
+        <div class="sliders-grid sliders-grid-5">
+          <div class="slider-item">
+            <div class="slider-header">
+              <span>추세 & 이평선 정배열 (MA)</span>
+              <strong id="wTrendVal">30%</strong>
+            </div>
+            <input type="range" id="wTrend" min="5" max="60" value="30">
+          </div>
+          <div class="slider-item">
+            <div class="slider-header">
+              <span>거래량 급증 & 수급 탄력</span>
+              <strong id="wVolumeVal">30%</strong>
+            </div>
+            <input type="range" id="wVolume" min="5" max="60" value="30">
+          </div>
+          <div class="slider-item">
+            <div class="slider-header">
+              <span>모멘텀 (MACD & RSI 탄력)</span>
+              <strong id="wMomentumVal">25%</strong>
+            </div>
+            <input type="range" id="wMomentum" min="5" max="60" value="25">
+          </div>
+          <div class="slider-item">
+            <div class="slider-header">
+              <span>당일 양봉 캔들 & 손익비</span>
+              <strong id="wPatternVal">15%</strong>
+            </div>
+            <input type="range" id="wPattern" min="5" max="60" value="15">
+          </div>
+          <div class="slider-item sector-slider-highlight">
+            <div class="slider-header">
+              <span>🔥 섹터 가감점 반영 강도</span>
+              <strong id="wSectorVal">100%</strong>
+            </div>
+            <input type="range" id="wSector" min="0" max="200" step="10" value="100">
+          </div>
+        </div>
+        <button id="resetWeightsBtn" class="btn btn-outline btn-sm">기본값 복원</button>
+      </div>
+      <!-- User Custom Sector Manual Boost/Penalty Controls -->
+      <div class="custom-sector-boost-wrap">
+        <div class="custom-sector-boost-title">
+          <span>🎯 <strong>섹터별 사용자 추가 가감점 수동 설정 (-5점 ~ +5점)</strong>: 자동 산출된 섹터 모멘텀 가감점에 더해 특정 업종에 직접 가산점/감점을 부여할 수 있습니다.</span>
+        </div>
+        <div id="customSectorBoostGrid" class="custom-sector-boost-grid">
+          <!-- Populated dynamically by script.js -->
+        </div>
+      </div>
+    </section>
+
+    <!-- Main Workspace Grid -->
+    <div class="workspace-grid">
+      <!-- Left Column: Top 5 Recommended Stocks -->
+      <aside class="top5-sidebar" id="top5Section">
+        <div class="sidebar-header">
+          <div>
+            <h2>오늘의 추천 종목 TOP 5</h2>
+            <p class="sidebar-sub" id="strategyDescText">KRX 1,000대 종목 중 기술적 점수 최상위 5선</p>
+          </div>
+          <span class="count-badge" id="funnelBadge">1,000종목 중 상위 0.5%</span>
+        </div>
+
+        <!-- Screening Funnel Info Bar -->
+        <div class="funnel-bar" id="funnelDetailBar">
+          <span>모집단 <b>1,000</b>종목</span>
+          <span class="funnel-arrow">➔</span>
+          <span>전략 부합 <b id="funnelMatchedCount">-</b>종목</span>
+          <span class="funnel-arrow">➔</span>
+          <span class="funnel-highlight">최상위 <b>TOP 5</b></span>
+        </div>
+
+        <div id="top5List" class="top5-list">
+          <!-- Populated dynamically by script.js -->
+        </div>
+
+        <!-- Summary Comparison Table of Top 5 -->
+        <div class="mini-matrix-card">
+          <div class="mini-matrix-title">TOP 5 핵심 지표 한눈에 비교</div>
+          <div class="table-scroll">
+            <table class="comparison-table">
+              <thead>
+                <tr>
+                  <th>순위/종목</th>
+                  <th>현재가</th>
+                  <th>점수</th>
+                  <th>RSI</th>
+                  <th>기대수익</th>
+                </tr>
+              </thead>
+              <tbody id="comparisonTableBody">
+                <!-- Populated by JS -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Right Column: Deep Technical Flow & Trading Plan -->
+      <main class="detail-main" id="detailSection">
+        <!-- Mobile Quick TOP 5 Switcher Bar (Visible on Mobile/Tablet) -->
+        <div class="mobile-top5-bar-wrap" aria-label="모바일 TOP 5 빠른 종목 전환">
+          <div class="mobile-top5-bar-header">
+            <span class="mobile-top5-label">⚡ 추천 TOP 5 빠른 전환</span>
+            <button type="button" id="scrollToTop5Btn" class="mobile-back-list-btn">▲ 목록·필터로 이동</button>
+          </div>
+          <div id="mobileTop5QuickBar" class="mobile-top5-pills">
+            <!-- Populated dynamically by script.js -->
+          </div>
+        </div>
+
+        <!-- Stock Header Info -->
+        <div class="detail-top-card">
+          <div class="detail-identity">
+            <div class="identity-badges">
+              <span class="rank-badge" id="detailRankBadge">TOP 1 추천</span>
+              <span class="market-badge" id="detailMarketBadge">KOSPI</span>
+              <span class="sector-badge" id="detailMcapBadge">시총 -</span>
+              <span class="sector-Highlight-badge" id="detailSectorBadge">섹터 -</span>
+              <span class="code-text" id="detailCodeText">-</span>
+            </div>
+            <h2 class="detail-stock-name" id="detailNameText">-</h2>
+            <p class="detail-summary-line" id="detailSummaryLine">-</p>
+          </div>
+
+          <div class="detail-price-box">
+            <div class="current-price-big" id="detailPriceText">-</div>
+            <div class="price-diff-row up" id="detailDiffText">-</div>
+            <div class="ohlc-mini" id="detailOhlcMini">-</div>
+          </div>
+
+          <div class="score-donut-box">
+            <div class="score-circle" id="detailScoreCircle">
+              <span class="score-num" id="detailScoreNum">-</span>
+              <span class="score-unit">점</span>
+            </div>
+            <span class="signal-grade" id="detailSignalGrade">강력 매수 시그널</span>
+          </div>
+        </div>
+
+        <!-- Actionable Trading Plan Strip (1st Entry / 2nd Buy on Dip / Target / StopLoss / Risk-Reward) -->
+        <div class="trading-plan-grid">
+          <div class="plan-card entry">
+            <div class="plan-label">1차 진입가 (선취매 비중 50%)</div>
+            <div class="plan-price" id="planEntryPrice">-</div>
+            <div class="plan-desc" id="planEntryDesc">현재가 부근 1차 선취매 진입 구간</div>
+          </div>
+          <div class="plan-card entry2">
+            <div class="plan-label">2차 매수가 (눌림목 추가매수 50%)</div>
+            <div class="plan-price" id="planSecondEntryPrice">-</div>
+            <div class="plan-desc" id="planSecondEntryDesc">손절 전 지지선 눌림 시 추가매수 (평단 인하)</div>
+          </div>
+          <div class="plan-card target">
+            <div class="plan-label">1차 목표가 (기대 수익률)</div>
+            <div class="plan-price" id="planTargetPrice">-</div>
+            <div class="plan-desc" id="planTargetDesc">볼린저밴드 상단 및 직전 매물대</div>
+          </div>
+          <div class="plan-card stop">
+            <div class="plan-label">손절 기준가 (최종 리스크 한도)</div>
+            <div class="plan-price" id="planStopPrice">-</div>
+            <div class="plan-desc" id="planStopDesc">2차 매수 지지선 하향 이탈 시 손절</div>
+          </div>
+          <div class="plan-card rr">
+            <div class="plan-label">손익비 (현재가 / 2차체결 평단)</div>
+            <div class="plan-price" id="planRRRatio">-</div>
+            <div class="plan-desc" id="planRRDesc">분할매수 시 평단 인하로 손익비 개선</div>
+          </div>
+        </div>
+
+        <!-- Interactive Custom HTML5 Canvas Candlestick & Volume Chart -->
+        <div class="chart-card" id="chartSection">
+          <div class="chart-toolbar">
+            <div class="chart-title-group">
+              <h3>실제 일봉 캔들스틱 & 이동평균선 & 거래량 차트 (최근 45거래일)</h3>
+              <span class="chart-hint">차트 위에 마우스를 올리거나 모바일에서 터치·드래그하면 일자별 시가·고가·저가·종가·거래량 및 이평선 값을 확인할 수 있습니다</span>
+            </div>
+            <div class="chart-toggles">
+              <label class="toggle-chip">
+                <input type="checkbox" id="toggleMA" checked>
+                <span class="dot ma5"></span>MA5
+                <span class="dot ma20"></span>MA20
+                <span class="dot ma60"></span>MA60
+              </label>
+              <label class="toggle-chip">
+                <input type="checkbox" id="toggleBB" checked>
+                <span class="dot bb"></span>볼린저밴드
+              </label>
+              <label class="toggle-chip">
+                <input type="checkbox" id="toggleLines" checked>
+                <span class="dot target"></span>목표/2차매수/손절선
+              </label>
+            </div>
+          </div>
+
+          <!-- Floating Crosshair Legend -->
+          <div class="chart-hover-bar" id="chartHoverBar">
+            <span id="hoverDate">오늘</span>
+            <span>시가 <b id="hoverOpen">-</b></span>
+            <span>고가 <b id="hoverHigh">-</b></span>
+            <span>저가 <b id="hoverLow">-</b></span>
+            <span>종가 <b id="hoverClose">-</b></span>
+            <span>거래량 <b id="hoverVol">-</b></span>
+            <span class="ma5-txt">MA5 <b id="hoverMA5">-</b></span>
+            <span class="ma20-txt">MA20 <b id="hoverMA20">-</b></span>
+            <span class="ma60-txt">MA60 <b id="hoverMA60">-</b></span>
+          </div>
+
+          <div class="canvas-container">
+            <canvas id="candleCanvas"></canvas>
+          </div>
+        </div>
+
+        <!-- Bottom Two Columns: Technical Indicators + Investment Simulator & Reasons -->
+        <div class="bottom-detail-grid">
+          <!-- Left: AI Technical Reasons & 4-Factor Breakdown -->
+          <div class="analysis-card">
+            <div class="card-section-title">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#3fb950" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                <polyline points="22 4 12 14.01 9 11.01"></polyline>
+              </svg>
+              <h3>실제 주가 흐름 기반 추천 핵심 근거</h3>
+            </div>
+            <ul class="reason-list" id="detailReasonList">
+              <!-- Populated by JS -->
+            </ul>
+
+            <div class="factor-bars-box">
+              <h4>세부 팩터별 기술적 평점 & 섹터 수급 가감점</h4>
+              <div class="factor-row">
+                <span class="factor-name">추세/이평선 (Trend)</span>
+                <div class="progress-track"><div class="progress-fill" id="barTrend" style="width: 90%"></div></div>
+                <span class="factor-val" id="valTrend">90</span>
+              </div>
+              <div class="factor-row">
+                <span class="factor-name">거래량/수급 (Volume)</span>
+                <div class="progress-track"><div class="progress-fill" id="barVolume" style="width: 88%"></div></div>
+                <span class="factor-val" id="valVolume">88</span>
+              </div>
+              <div class="factor-row">
+                <span class="factor-name">모멘텀 (RSI/MACD)</span>
+                <div class="progress-track"><div class="progress-fill" id="barMomentum" style="width: 92%"></div></div>
+                <span class="factor-val" id="valMomentum">92</span>
+              </div>
+              <div class="factor-row">
+                <span class="factor-name">캔들/손익비 (Pattern)</span>
+                <div class="progress-track"><div class="progress-fill" id="barPattern" style="width: 94%"></div></div>
+                <span class="factor-val" id="valPattern">94</span>
+              </div>
+              <div class="factor-row factor-row-sector">
+                <span class="factor-name" id="labelSectorFactor">섹터 가감점 (Sector)</span>
+                <div class="progress-track"><div class="progress-fill sector-fill" id="barSector" style="width: 50%"></div></div>
+                <span class="factor-val" id="valSector">+0.0점</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: Technical Indicators & Position Sizing Calculator -->
+          <div class="simulator-card" id="calcSection">
+            <div class="card-section-title">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="4" y="2" width="16" height="20" rx="2" ry="2"></rect>
+                <line x1="8" y1="6" x2="16" y2="6"></line>
+                <line x1="16" y1="14" x2="16" y2="18"></line>
+                <path d="M16 10h.01"></path>
+                <path d="M12 10h.01"></path>
+                <path d="M8 10h.01"></path>
+                <path d="M12 14h.01"></path>
+                <path d="M8 14h.01"></path>
+                <path d="M12 18h.01"></path>
+                <path d="M8 18h.01"></path>
+              </svg>
+              <h3>보조지표 정밀 진단 & 매수 시뮬레이터</h3>
+            </div>
+
+            <div class="indicator-mini-grid">
+              <div class="ind-item">
+                <span class="ind-label">RSI (14일)</span>
+                <strong class="ind-val" id="indRsiVal">-</strong>
+                <span class="ind-status" id="indRsiStatus">-</span>
+              </div>
+              <div class="ind-item">
+                <span class="ind-label">MACD 오실레이터</span>
+                <strong class="ind-val" id="indMacdVal">-</strong>
+                <span class="ind-status" id="indMacdStatus">-</span>
+              </div>
+              <div class="ind-item">
+                <span class="ind-label">거래량 (20일 대비)</span>
+                <strong class="ind-val" id="indVolVal">-</strong>
+                <span class="ind-status" id="indVolStatus">-</span>
+              </div>
+              <div class="ind-item">
+                <span class="ind-label">1,000종목 내 퀀트순위</span>
+                <strong class="ind-val" id="indRankVal">-</strong>
+                <span class="ind-status" id="indRankStatus">-</span>
+              </div>
+            </div>
+
+            <div class="position-calc-box">
+              <div class="calc-header">
+                <label for="capitalInput">예상 투자 금액 (원)</label>
+                <div class="quick-cap-btns">
+                  <button type="button" class="cap-btn" data-cap="1000000">100만</button>
+                  <button type="button" class="cap-btn" data-cap="5000000">500만</button>
+                  <button type="button" class="cap-btn" data-cap="10000000">1,000만</button>
+                </div>
+              </div>
+              <input type="number" id="capitalInput" class="capital-input" value="5000000" step="100000" min="100000">
+
+              <div class="calc-results">
+                <div class="calc-row">
+                  <span>1차 매수 (현재가 · 비중 50%)</span>
+                  <strong id="calcEntry1Shares">-</strong>
+                </div>
+                <div class="calc-row entry2-row">
+                  <span>2차 추가매수 (눌림목 · 비중 50%)</span>
+                  <strong id="calcEntry2Shares">-</strong>
+                </div>
+                <div class="calc-row">
+                  <span>1·2차 합산 수량 및 최종 평단가</span>
+                  <strong id="calcShares">-</strong>
+                </div>
+                <div class="calc-row profit">
+                  <span>1차 목표가 도달 시 수익 (평단 기준)</span>
+                  <strong id="calcProfit">-</strong>
+                </div>
+                <div class="calc-row loss">
+                  <span>손절가 이탈 시 최대 손실 (평단 기준)</span>
+                  <strong id="calcLoss">-</strong>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- Full 1,000-Stock Screener Modal -->
+    <div id="allStocksModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-window">
+        <div class="modal-header">
+          <div>
+            <h2 id="modalTitle">KRX 시가총액 상위 1,000대 종목 전체 퀀트 순위표</h2>
+            <p class="modal-sub">선정 기준: KOSPI 시가총액 상위 500종목 + KOSDAQ 시가총액 상위 500종목 (보통주 기준, ETF/스팩/우선주 제외) · 종목 클릭 시 상세 차트 이동</p>
+          </div>
+          <button id="closeModalBtn" class="modal-close-btn" aria-label="닫기">&times;</button>
+        </div>
+
+        <div class="modal-Controls">
+          <input type="text" id="modalSearchInput" class="search-input" placeholder="1,000개 종목명, 코드 또는 섹터명 즉시 검색...">
+          <select id="modalMarketFilter" class="select-box">
+            <option value="ALL">전체 시장 (1,000종목)</option>
+            <option value="KOSPI">KOSPI (500종목)</option>
+            <option value="KOSDAQ">KOSDAQ (500종목)</option>
+          </select>
+          <select id="modalSectorFilter" class="select-box">
+            <option value="ALL">전체 업종/섹터</option>
+          </select>
+          <select id="modalSortSelect" class="select-box">
+            <option value="score">정렬: 퀀트 종합점수 높은 순 (섹터 가감 반영)</option>
+            <option value="sectorDesc">정렬: 섹터 가감점 높은 순 (주도 업종 순)</option>
+            <option value="changeDesc">정렬: 당일 등락률 높은 순</option>
+            <option value="volDesc">정렬: 거래량 급증비(20일 대비) 높은 순</option>
+            <option value="rsiAsc">정렬: RSI 낮은 순 (과매도 순)</option>
+            <option value="mcap">정렬: 시장별 시가총액 순위 순</option>
+          </select>
+          <span id="modalResultCount" style="font-size:0.78rem; color:var(--text-secondary); align-self:center; margin-left:auto;">총 1,000종목</span>
+        </div>
+
+        <div class="modal-table-wrap">
+          <table class="full-screener-table">
+            <thead>
+              <tr>
+                <th>퀀트순위</th>
+                <th>종목명 (코드)</th>
+                <th>업종/섹터 (가감점)</th>
+                <th>시총순위 (시가총액)</th>
+                <th>현재가</th>
+                <th>전일대비 (등락률)</th>
+                <th>퀀트점수</th>
+                <th>RSI(14)</th>
+                <th>거래량비(20일)</th>
+                <th>이평선/시그널</th>
+                <th>1차목표(기대수익)</th>
+              </tr>
+            </thead>
+            <tbody id="modalTableBody">
+              <!-- Populated by JS -->
+            </tbody>
+          </table>
+          <div id="modalLoadMoreWrap" style="text-align:center; padding:14px;">
+            <button id="modalShowAllBtn" class="btn btn-outline btn-sm">나머지 종목 모두 표시 (전체 1,000종목 보기)</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Disclaimer Footer -->
+    <footer class="app-footer">
+      <p>
+        <strong>모집단 기준 및 투자 유의사항:</strong> 본 웹 애플리케이션은 <strong>한국거래소(KRX) 시가총액 상위 1,000대 종목(KOSPI 시총 1~500위 + KOSDAQ 시총 1~500위 보통주, 한국 증시 전체 시가총액의 약 98.5% 포괄)</strong>의 실제 65거래일 일봉 데이터(총 65,000개 캔들) 및 네이버 증권 실시간 시세 폴링 API(JSONP)를 연동하여 전수 분석합니다. 제공되는 TOP 5 추천 종목과 목표가/손절가는 참고 자료이며, 모든 투자의 최종 판단과 책임은 투자자 본인에게 있습니다.
+      </p>
+    </footer>
+
+    <!-- Mobile Sticky Bottom Quick Navigation (Visible on Mobile Devices) -->
+    <nav class="mobile-bottom-nav" aria-label="모바일 빠른 이동 메뉴">
+      <button type="button" class="m-nav-btn active" data-target="top5Section">
+        <span class="m-nav-icon">🏆</span>
+        <span class="m-nav-txt">추천 TOP 5</span>
+      </button>
+      <button type="button" class="m-nav-btn" data-target="detailSection">
+        <span class="m-nav-icon">📈</span>
+        <span class="m-nav-txt">종목 상세</span>
+      </button>
+      <button type="button" class="m-nav-btn" data-target="chartSection">
+        <span class="m-nav-icon">🕯️</span>
+        <span class="m-nav-txt">일봉 차트</span>
+      </button>
+      <button type="button" class="m-nav-btn" data-target="calcSection">
+        <span class="m-nav-icon">🧮</span>
+        <span class="m-nav-txt">매수 계산기</span>
+      </button>
+      <button type="button" class="m-nav-btn" data-target="openModal">
+        <span class="m-nav-icon">📊</span>
+        <span class="m-nav-txt">1,000위 표</span>
+      </button>
+    </nav>
+  </div>
+
+  <!-- 1,000종목 65일 일봉 데이터 및 분석 스크립트 -->
+  <script src="stocks_data.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
