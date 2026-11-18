@@ -2138,7 +2138,8 @@ body {
   }
 
   #marketSelect,
-  #sectorSelect {
+  #sectorSelect,
+  #entryTimingSelect {
     grid-column: 1 / -1;
   }
 

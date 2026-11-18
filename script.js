@@ -143,6 +143,7 @@ let sortedSectors = [];     // 가감점 순으로 정렬된 섹터 배열
 let currentStrategy = 'all';
 let currentMarket = 'ALL';
 let currentSector = 'ALL';
+let currentEntryTiming = 'ALL';
 let analyzedUniverse = [];
 let currentTop5 = [];
 let selectedStock = null;
@@ -393,19 +394,36 @@ function evaluateStock(stock, indexOrder) {
   const preCalibratedScore = rawScore + strategyBonus;
   const score = Math.round(Math.min(97.8, Math.max(30.0, preCalibratedScore)) * 10) / 10;
 
+  // 신규 진입 타이밍 진단 분류 (확정 일봉 기준)
+  const histCandles = len > 1 ? rc.slice(0, len - 1) : rc;
+  const histMA5 = calcLatestSMA(histCandles, 5);
+  const baseRefPrice = defaultEntrySnapshotByCode[stock.code] || currentPrice;
+  const distHistMa5Pct = histMA5 > 0 ? ((baseRefPrice - histMA5) / histMA5) * 100 : 0;
+
+  let entryTimingType = 'CONFIRM';
+  let entryTimingLabel = '👀 지지 확인 진입';
+  let entryTimingShort = '👀 지지확인';
+  if (distHistMa5Pct > 4.2 || rsi >= 69) {
+    entryTimingType = 'WAIT_DIP';
+    entryTimingLabel = '⏳ 눌림 대기 권장';
+    entryTimingShort = '⏳ 눌림대기';
+  } else if (isPullback || isOversold || (distHistMa5Pct >= -2.5 && distHistMa5Pct <= 2.4 && rsi <= 63)) {
+    entryTimingType = 'NOW';
+    entryTimingLabel = '🟢 지금 진입 적기';
+    entryTimingShort = '🟢 지금진입';
+  } else if (isBreakout || isVolumeActive) {
+    entryTimingType = 'BREAKOUT';
+    entryTimingLabel = '🔥 돌파 매수 적기';
+    entryTimingShort = '🔥 돌파적기';
+  }
+
   // 태그 생성
   const tags = [];
-  if (isBreakout) {
-    tags.push({ text: currentPrice > ma20 && ma5 > ma20 ? '정배열 추세돌파' : '20일선 상향돌파', hot: true });
-  } else if (isVolumeActive) {
-    tags.push({ text: `거래량 ${volRatio}% 폭발`, hot: true });
-  } else if (isOversold) {
-    tags.push({ text: `RSI ${rsi} 과매도반등`, hot: true });
-  } else if (isPullback) {
-    tags.push({ text: '이평선 눌림목지지', hot: true });
-  } else {
-    tags.push({ text: currentPrice >= ma5 ? '5일선 지지' : `RSI ${rsi}`, hot: false });
-  }
+  tags.push({
+    text: entryTimingShort,
+    hot: entryTimingType === 'NOW' || entryTimingType === 'BREAKOUT',
+    sectorClass: entryTimingType === 'NOW' ? 'sector-pos' : ''
+  });
   tags.push({ text: `거래량비 ${volRatio}%`, hot: volRatio >= 150 });
 
   return {
@@ -428,6 +446,9 @@ function evaluateStock(stock, indexOrder) {
     isPullback,
     isVolumeActive,
     isOversold,
+    entryTimingType,
+    entryTimingLabel,
+    entryTimingShort,
     factorTrend,
     factorVolume,
     factorMomentum,
@@ -781,13 +802,43 @@ function filterAndRankTop5() {
     prevOverallScore = calibrated;
   });
 
-  // 시장/규모 및 섹터 필터 적용된 모집단
-  const marketFiltered = analyzedUniverse.filter(s => {
+  // 시장/규모 및 섹터 필터 적용된 기본 모집단
+  const baseMarketSectorPool = analyzedUniverse.filter(s => {
     if (currentMarket === 'KOSPI' && s.market !== 'KOSPI') return false;
     if (currentMarket === 'KOSDAQ' && s.market !== 'KOSDAQ') return false;
     if (currentMarket === 'TOP200' && s.mcapRankNum > 100) return false;
     if (currentSector !== 'ALL' && s.sector !== currentSector) return false;
     return true;
+  });
+
+  // 신규 진입 진단별 종목 수 실시간 집계 및 드롭다운 라벨 업데이트
+  const cntNow = baseMarketSectorPool.filter(s => s.entryTimingType === 'NOW').length;
+  const cntBreakout = baseMarketSectorPool.filter(s => s.entryTimingType === 'BREAKOUT').length;
+  const cntWaitDip = baseMarketSectorPool.filter(s => s.entryTimingType === 'WAIT_DIP').length;
+  const cntConfirm = baseMarketSectorPool.filter(s => s.entryTimingType === 'CONFIRM').length;
+  const cntActionable = cntNow + cntBreakout;
+
+  const entryTimingSelectEl = document.getElementById('entryTimingSelect');
+  if (entryTimingSelectEl) {
+    const prevTiming = currentEntryTiming;
+    entryTimingSelectEl.innerHTML = `
+      <option value="ALL">진입진단: 전체 (${baseMarketSectorPool.length.toLocaleString()})</option>
+      <option value="ACTIONABLE">⚡ 즉시 진입 가능 (${cntActionable.toLocaleString()})</option>
+      <option value="NOW">🟢 지금 진입 적기 (${cntNow.toLocaleString()})</option>
+      <option value="BREAKOUT">🔥 돌파 매수 적기 (${cntBreakout.toLocaleString()})</option>
+      <option value="WAIT_DIP">⏳ 눌림 대기 권장 (${cntWaitDip.toLocaleString()})</option>
+      <option value="CONFIRM">👀 지지 확인 진입 (${cntConfirm.toLocaleString()})</option>
+    `;
+    entryTimingSelectEl.value = prevTiming;
+  }
+
+  // 신규 진입 진단 필터 최종 적용
+  const marketFiltered = baseMarketSectorPool.filter(s => {
+    if (currentEntryTiming === 'ALL') return true;
+    if (currentEntryTiming === 'ACTIONABLE') {
+      return s.entryTimingType === 'NOW' || s.entryTimingType === 'BREAKOUT';
+    }
+    return s.entryTimingType === currentEntryTiming;
   });
 
   const breakoutList = marketFiltered.filter(s => s.isBreakout);
@@ -1757,17 +1808,22 @@ function renderFullModalTable() {
   const mktFilter = document.getElementById('modalMarketFilter').value;
   const secFilterEl = document.getElementById('modalSectorFilter');
   const secFilter = secFilterEl ? secFilterEl.value : 'ALL';
+  const timingFilterEl = document.getElementById('modalTimingFilter');
+  const timingFilter = timingFilterEl ? timingFilterEl.value : 'ALL';
   const sortKey = document.getElementById('modalSortSelect').value;
 
   let list = analyzedUniverse.filter(s => {
     if (mktFilter !== 'ALL' && s.market !== mktFilter) return false;
     if (secFilter !== 'ALL' && s.sector !== secFilter) return false;
+    if (timingFilter === 'ACTIONABLE' && s.entryTimingType !== 'NOW' && s.entryTimingType !== 'BREAKOUT') return false;
+    if (timingFilter !== 'ALL' && timingFilter !== 'ACTIONABLE' && s.entryTimingType !== timingFilter) return false;
     if (!query) return true;
     return (
       s.name.toLowerCase().includes(query) ||
       s.code.includes(query) ||
       (s.sector && s.sector.toLowerCase().includes(query)) ||
       (s.subSector && s.subSector.toLowerCase().includes(query)) ||
+      (s.entryTimingLabel && s.entryTimingLabel.toLowerCase().includes(query)) ||
       s.mcapRank.toLowerCase().includes(query)
     );
   });
@@ -2092,16 +2148,19 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('modalMarketFilter').addEventListener('change', renderFullModalTable);
   const modalSecFilter = document.getElementById('modalSectorFilter');
   if (modalSecFilter) modalSecFilter.addEventListener('change', renderFullModalTable);
+  const modalTimingFilter = document.getElementById('modalTimingFilter');
+  if (modalTimingFilter) modalTimingFilter.addEventListener('change', renderFullModalTable);
   document.getElementById('modalSortSelect').addEventListener('change', renderFullModalTable);
   document.getElementById('modalShowAllBtn').addEventListener('click', () => {
     modalShowAll = true;
     renderFullModalTable();
   });
 
-  // 4) 시장 및 섹터 필터 변경
+  // 4) 시장, 섹터 및 신규 진입 진단 필터 변경
   document.getElementById('marketSelect').addEventListener('change', e => {
     currentMarket = e.target.value;
     selectedStock = null;
+    userManuallySelectedStock = false;
     refreshUI();
   });
 
@@ -2110,6 +2169,17 @@ document.addEventListener('DOMContentLoaded', () => {
     sectorSelectEl.addEventListener('change', e => {
       currentSector = e.target.value;
       selectedStock = null;
+      userManuallySelectedStock = false;
+      refreshUI();
+    });
+  }
+
+  const entryTimingSelectEl = document.getElementById('entryTimingSelect');
+  if (entryTimingSelectEl) {
+    entryTimingSelectEl.addEventListener('change', e => {
+      currentEntryTiming = e.target.value;
+      selectedStock = null;
+      userManuallySelectedStock = false;
       refreshUI();
     });
   }
