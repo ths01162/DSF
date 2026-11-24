@@ -148,6 +148,88 @@ function parseMcapEok(mcapText) {
   return eok > 0 ? eok : 1000;
 }
 
+// [공통] 신규 진입 타이밍 진단 단일 엔진 (목록 필터 · 배지 · 상세 타점 계산기 100% 일치 보장)
+function classifyEntryTiming({
+  refPrice,
+  histMA5,
+  histMA20,
+  histAtrPct,
+  rsi,
+  changeRate,
+  todayOpen,
+  todayClose,
+  isBreakout,
+  isPullback,
+  isVolumeActive,
+  isOversold
+}) {
+  const distMa5Pct = histMA5 > 0 ? ((refPrice - histMA5) / histMA5) * 100 : 0;
+  const distMa20Pct = histMA20 > 0 ? ((refPrice - histMA20) / histMA20) * 100 : 0;
+  const ma5OverheatLimit = Math.min(5.5, Math.max(3.8, (histAtrPct || 0.03) * 130));
+  const isBullishOrFlat = todayClose >= todayOpen * 0.995 && changeRate >= -0.5;
+  const isAboveMa20Support = histMA20 > 0 ? refPrice >= histMA20 * 0.99 : true;
+
+  // 1) 과열·추격 리스크 구간 (5일선 변동성 이격 초과 / 20일선 과열 / RSI 과매수 / 당일 급등)
+  if (distMa5Pct > ma5OverheatLimit || distMa20Pct > 11.0 || rsi >= 69 || changeRate >= 7.5) {
+    let reason = '단기 급등으로 5일선 이격도가 높습니다';
+    if (rsi >= 69) reason = `RSI(${rsi}) 과매수 구간에 진입해 단기 숨고르기가 예상됩니다`;
+    else if (distMa20Pct > 11.0) reason = `20일선 대비 이격(+${distMa20Pct.toFixed(1)}%)이 벌어져 과열 구간입니다`;
+    else if (changeRate >= 7.5) reason = `당일 단기 급등(+${changeRate.toFixed(1)}%)으로 추격매수 리스크가 큽니다`;
+    return {
+      type: 'WAIT_DIP',
+      label: '⏳ 눌림 대기 권장',
+      short: '⏳ 눌림대기',
+      tagClass: 'dip-tag',
+      reason
+    };
+  }
+
+  // 2) 거래량·추세 돌파 초기 구간 (과열 아닌 상태에서 돌파/수급폭발 충족)
+  if (isBreakout || isVolumeActive) {
+    return {
+      type: 'BREAKOUT',
+      label: '🔥 돌파 매수 적기',
+      short: '🔥 돌파적기',
+      tagClass: 'gain-tag',
+      reason: '거래량 수급을 동반한 추세 돌파 초기 구간입니다'
+    };
+  }
+
+  // 3) 건전한 눌림목 · 과매도 양봉 반등 · 20일선 지지 안착 구간 (역배열·음봉 하락 추세 배제)
+  const isHealthySupportZone =
+    isAboveMa20Support &&
+    isBullishOrFlat &&
+    distMa5Pct >= -1.8 &&
+    distMa5Pct <= 2.2 &&
+    rsi >= 42 &&
+    rsi <= 62;
+
+  if (isPullback || isOversold || isHealthySupportZone) {
+    const reason = isOversold
+      ? `과매도(RSI ${rsi}) 구간에서 양봉 반등 시그널이 포착되었습니다`
+      : '5일·20일 이평선 지지력과 매수세가 확인된 구간입니다';
+    return {
+      type: 'NOW',
+      label: '🟢 지금 진입 적기',
+      short: '🟢 지금진입',
+      tagClass: 'gain-tag',
+      reason
+    };
+  }
+
+  // 4) 그 외: 20일선 하향 이탈·음봉 약세·탄력 둔화 구간 -> 하단 지지 확인 대기
+  const reason = !isAboveMa20Support
+    ? '20일선 아래 약세 흐름이므로 성급한 진입보다 하단 지지와 양봉 전환을 확인하세요'
+    : '단기 매수 탄력이 둔화된 구간이므로 하단 지지선 안착을 확인한 뒤 진입하세요';
+  return {
+    type: 'CONFIRM',
+    label: '👀 지지 확인 진입',
+    short: '👀 지지확인',
+    tagClass: 'dip-tag',
+    reason
+  };
+}
+
 // MACD(12, 26, 9) 계산
 function calcLatestMACD(rawCandles) {
   const len = rawCandles.length;
@@ -468,27 +550,27 @@ function evaluateStock(stock, indexOrder) {
   const preCalibratedScore = rawScore + strategyBonus;
   const score = Math.round(Math.min(97.5, Math.max(25.0, preCalibratedScore)) * 10) / 10;
 
-  // 신규 진입 타이밍 진단 분류 (확정 일봉 기준)
+  // 신규 진입 타이밍 진단 분류 (공통 단일 엔진 사용 - 확정 일봉 기준)
   const histMA5 = calcLatestSMA(histCandles, 5);
+  const histMA20 = calcLatestSMA(histCandles, 20);
   const baseRefPrice = defaultEntrySnapshotByCode[stock.code] || currentPrice;
-  const distHistMa5Pct = histMA5 > 0 ? ((baseRefPrice - histMA5) / histMA5) * 100 : 0;
-
-  let entryTimingType = 'CONFIRM';
-  let entryTimingLabel = '👀 지지 확인 진입';
-  let entryTimingShort = '👀 지지확인';
-  if (distHistMa5Pct > 4.2 || rsi >= 69) {
-    entryTimingType = 'WAIT_DIP';
-    entryTimingLabel = '⏳ 눌림 대기 권장';
-    entryTimingShort = '⏳ 눌림대기';
-  } else if (isPullback || isOversold || (distHistMa5Pct >= -2.5 && distHistMa5Pct <= 2.4 && rsi <= 63)) {
-    entryTimingType = 'NOW';
-    entryTimingLabel = '🟢 지금 진입 적기';
-    entryTimingShort = '🟢 지금진입';
-  } else if (isBreakout || isVolumeActive) {
-    entryTimingType = 'BREAKOUT';
-    entryTimingLabel = '🔥 돌파 매수 적기';
-    entryTimingShort = '🔥 돌파적기';
-  }
+  const timingDiag = classifyEntryTiming({
+    refPrice: baseRefPrice,
+    histMA5,
+    histMA20,
+    histAtrPct,
+    rsi,
+    changeRate,
+    todayOpen: todayCandle.open,
+    todayClose: todayCandle.close,
+    isBreakout,
+    isPullback,
+    isVolumeActive,
+    isOversold
+  });
+  const entryTimingType = timingDiag.type;
+  const entryTimingLabel = timingDiag.label;
+  const entryTimingShort = timingDiag.short;
 
   // 태그 생성
   const tags = [];
@@ -1159,7 +1241,7 @@ function selectStock(stock, rank = null, options = {}) {
 function calculateCustomHoldingPlan(stock, rawEntryPrice, addRatio = 1) {
   const curr = stock.currentPrice;
   const isCustom = Boolean(rawEntryPrice && Number(rawEntryPrice) > 0);
-  const lockedDefaultPrice = defaultEntrySnapshotByCode[stock.code] || stock.todayCandle?.open || curr;
+  const lockedDefaultPrice = defaultEntrySnapshotByCode[stock.code] || curr;
   const ratio = Number(addRatio) > 0 ? Number(addRatio) : 1;
 
   const rc = stock.rawCandles || [];
@@ -1197,52 +1279,65 @@ function calculateCustomHoldingPlan(stock, rawEntryPrice, addRatio = 1) {
   const histMA60 = calcLatestSMA(histCandles, Math.min(60, hLen));
   const histBB = calcLatestBB(histCandles, 20, 2);
 
-  // [신규 진입 타이밍 진단] 매수가를 입력하지 않은 경우 언제·얼마에 1차 진입할지 확정 일봉 기준으로 산출
+  // [신규 진입 타이밍 진단] 매수가를 입력하지 않은 경우 공통 엔진(classifyEntryTiming)으로 100% 일치된 진단 및 지정가 산출
   let entryPrice;
   let entryTitle = '① 신규 1차 진입가';
-  let entryTag = '🟢 즉시 진입 적기';
+  let entryTag = '🟢 지금 진입 적기';
   let entryTagClass = 'gain-tag';
   let entrySub = '';
   let entryDesc = '';
 
-  const distMa5Pct = histMA5 > 0 ? ((lockedDefaultPrice - histMA5) / histMA5) * 100 : 0;
+  const timingDiag = classifyEntryTiming({
+    refPrice: lockedDefaultPrice,
+    histMA5,
+    histMA20,
+    histAtrPct,
+    rsi: stock.rsi,
+    changeRate: stock.changeRate,
+    todayOpen: stock.todayCandle?.open || lockedDefaultPrice,
+    todayClose: stock.todayCandle?.close || lockedDefaultPrice,
+    isBreakout: stock.isBreakout,
+    isPullback: stock.isPullback,
+    isVolumeActive: stock.isVolumeActive,
+    isOversold: stock.isOversold
+  });
 
   if (isCustom) {
     entryPrice = Math.max(10, Math.round(Number(rawEntryPrice)));
     entryTitle = '① 내 매수 진입가';
-  } else if (distMa5Pct > 4.2 || stock.rsi >= 69) {
+  } else if (timingDiag.type === 'WAIT_DIP') {
     // 단기 급등·과열 구간 -> 추격매수 금지, 눌림목 대기 지정가 제시
     const pullbackTarget = Math.max(histMA5, lockedDefaultPrice * (1 - Math.min(0.038, histAtrPct * 0.9)));
     entryPrice = roundToTick(Math.min(lockedDefaultPrice * 0.985, pullbackTarget));
     const waitDropPct = (((entryPrice - lockedDefaultPrice) / lockedDefaultPrice) * 100).toFixed(1);
-    entryTag = '⏳ 눌림 대기 권장';
-    entryTagClass = 'dip-tag';
+    entryTag = timingDiag.label;
+    entryTagClass = timingDiag.tagClass;
     entrySub = `기준가 대비 ${waitDropPct}% 눌림 대기 (비중 50%)`;
-    entryDesc = `단기 급등으로 5일선 이격도가 높습니다. 지금 추격매수하지 말고 ${entryPrice.toLocaleString()}원(단기 지지선)까지 눌릴 때 1차 진입하세요.`;
-  } else if (stock.isPullback || stock.isOversold || (distMa5Pct >= -2.5 && distMa5Pct <= 2.4 && stock.rsi <= 63)) {
-    // 이평선 눌림목 지지 / 과매도 반등 적기 -> 지금 즉시 1차 분할 진입 권장
-    entryPrice = roundToTick(lockedDefaultPrice);
-    const entryLow = roundToTick(entryPrice * 0.992);
-    entryTag = '🟢 지금 진입 적기';
-    entryTagClass = 'gain-tag';
-    entrySub = `권장 구간: ${entryLow.toLocaleString()}~${entryPrice.toLocaleString()}원 (50%)`;
-    entryDesc = `5일·20일 이평선 지지력이 확인된 구간입니다. 현재가(${entryPrice.toLocaleString()}원) 부근에서 바로 1차 선취매(비중 50%)로 들어가기 좋은 타이밍입니다.`;
-  } else if (stock.isBreakout || stock.isVolumeActive) {
+    entryDesc = `${timingDiag.reason}. 지금 추격매수하지 말고 ${entryPrice.toLocaleString()}원(단기 지지선)까지 눌릴 때 1차 진입하세요.`;
+  } else if (timingDiag.type === 'BREAKOUT') {
     // 거래량 동반 추세 돌파 구간 -> 돌파 초기 1차 선취매 진입
     entryPrice = roundToTick(lockedDefaultPrice);
     const entryLow = roundToTick(entryPrice * 0.992);
-    entryTag = '🔥 돌파 매수 적기';
-    entryTagClass = 'gain-tag';
+    entryTag = timingDiag.label;
+    entryTagClass = timingDiag.tagClass;
     entrySub = `권장 구간: ${entryLow.toLocaleString()}~${entryPrice.toLocaleString()}원 (50%)`;
     entryDesc = `거래량(${stock.volRatio}%) 수급을 동반한 추세 돌파 초기입니다. ${entryPrice.toLocaleString()}원 부근에서 1차 진입(50%) 후 눌림 시 2차 매수로 대응하세요.`;
+  } else if (timingDiag.type === 'NOW') {
+    // 이평선 눌림목 지지 / 과매도 반등 적기 -> 지금 즉시 1차 분할 진입 권장
+    entryPrice = roundToTick(lockedDefaultPrice);
+    const entryLow = roundToTick(entryPrice * 0.992);
+    entryTag = timingDiag.label;
+    entryTagClass = timingDiag.tagClass;
+    entrySub = `권장 구간: ${entryLow.toLocaleString()}~${entryPrice.toLocaleString()}원 (50%)`;
+    entryDesc = `${timingDiag.reason}. 현재가(${entryPrice.toLocaleString()}원) 부근에서 바로 1차 선취매(비중 50%)로 들어가기 좋은 타이밍입니다.`;
   } else {
-    // 단기 모멘텀 둔화 구간 -> 하단 지지선 지정가 대기 권장
+    // 역배열·음봉 약세·탄력 둔화 구간 -> 하단 지지선 지정가 대기 권장
     entryPrice = roundToTick(Math.min(lockedDefaultPrice * 0.988, Math.max(histBB.lower, lockedDefaultPrice * (1 - histAtrPct * 0.65))));
     const waitDropPct = (((entryPrice - lockedDefaultPrice) / lockedDefaultPrice) * 100).toFixed(1);
-    entryTag = '👀 지지 확인 진입';
-    entryTagClass = 'dip-tag';
+    entryTag = timingDiag.label;
+    entryTagClass = timingDiag.tagClass;
     entrySub = `하단 지지(${waitDropPct}%) 지정가 대기 (50%)`;
-    entryDesc = `단기 탄력이 둔화된 구간이므로 성급한 추격보다 ${entryPrice.toLocaleString()}원 부근 지지 및 양봉 전환을 확인하고 1차 진입하세요.`;
+    entryDesc = `${timingDiag.reason}. 목표 대기 지정가는 ${entryPrice.toLocaleString()}원 부근입니다.`;
   }
 
   // 1) 추가매수 적정가 (1차 진입가 및 확정 일봉 지지선 기준 100% 고정값)
