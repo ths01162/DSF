@@ -88,20 +88,64 @@ function calcLatestBB(rawCandles, period = 20, mult = 2) {
   };
 }
 
-// RSI(14) 계산
+// 표준 Wilder's RSI(14) 계산 (HTS · 네이버 금융 · TradingView 표준 평활 방식)
 function calcLatestRSI(rawCandles, period = 14) {
   const len = rawCandles.length;
   if (len <= period) return 50;
-  let gains = 0;
-  let losses = 0;
-  for (let i = len - period; i < len; i++) {
+  let avgGain = 0;
+  let avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
     const diff = rawCandles[i][4] - rawCandles[i - 1][4];
-    if (diff >= 0) gains += diff;
-    else losses -= diff;
+    if (diff >= 0) avgGain += diff;
+    else avgLoss -= diff;
   }
-  if (losses === 0) return 100;
-  const rs = (gains / period) / (losses / period);
+  avgGain /= period;
+  avgLoss /= period;
+
+  for (let i = period + 1; i < len; i++) {
+    const diff = rawCandles[i][4] - rawCandles[i - 1][4];
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? -diff : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+  }
+  if (avgLoss === 0) return avgGain === 0 ? 50 : 100;
+  const rs = avgGain / avgLoss;
   return Math.round((100 - 100 / (1 + rs)) * 10) / 10;
+}
+
+// 장중(09:00~15:30 KST) 당일 누적 거래량 시간 경과율 보정 계수 (0.08 ~ 1.0)
+function getIntradayVolumeProgress(candleDateStr) {
+  if (!candleDateStr) return 1.0;
+  const now = new Date();
+  const kst = new Date(now.getTime() + (now.getTimezoneOffset() + 540) * 60000);
+  const day = kst.getDay();
+  if (day === 0 || day === 6) return 1.0; // 주말은 장 마감 기준
+
+  const todayMD = `${kst.getMonth() + 1}/${kst.getDate()}`;
+  const normalizedDate = String(candleDateStr).replace(/^0/, '').replace(/\/0/, '/');
+  if (normalizedDate !== todayMD) return 1.0; // 과거 일자 캔들은 확정 거래량
+
+  const totalMin = kst.getHours() * 60 + kst.getMinutes();
+  const openMin = 9 * 60;        // 09:00
+  const closeMin = 15 * 60 + 30; // 15:30
+  if (totalMin < openMin || totalMin >= closeMin) return 1.0;
+
+  const elapsedRatio = Math.max(1, totalMin - openMin) / (closeMin - openMin);
+  // 장 초반·후반 U자형 거래량 분포를 반영한 완만한 보정 커브 (초반 과대추정 방지)
+  return Math.max(0.08, Math.min(1.0, Math.pow(elapsedRatio, 0.85)));
+}
+
+// 시가총액 텍스트("1,111조 9,622억원", "8,540억원" 등)를 억원 단위 숫자로 통합 변환
+function parseMcapEok(mcapText) {
+  if (!mcapText) return 1000;
+  const clean = String(mcapText).replace(/,/g, '');
+  let eok = 0;
+  const joMatch = clean.match(/(\d+(?:\.\d+)?)\s*조/);
+  const eokMatch = clean.match(/(\d+(?:\.\d+)?)\s*억/);
+  if (joMatch) eok += parseFloat(joMatch[1]) * 10000;
+  if (eokMatch) eok += parseFloat(eokMatch[1]);
+  return eok > 0 ? eok : 1000;
 }
 
 // MACD(12, 26, 9) 계산
@@ -219,17 +263,20 @@ function evaluateStock(stock, indexOrder) {
   const rsi = calcLatestRSI(rc, 14);
   const macd = calcLatestMACD(rc);
 
-  // 직전 20거래일 평균 거래량 대비 금일 거래량 비율
+  // 직전 20거래일 평균 거래량 대비 금일 거래량 비율 (장중 시간 경과율 보정 적용)
   const vStart = Math.max(0, len - 21);
   const vEnd = len - 1;
   let volSum = 0;
   for (let i = vStart; i < vEnd; i++) volSum += rc[i][5];
   const avgVol20 = vEnd > vStart ? volSum / (vEnd - vStart) : todayCandle.volume;
-  const volRatio = avgVol20 > 0 ? Math.max(1, Math.round((todayCandle.volume / avgVol20) * 100)) : 100;
+  const volProgress = getIntradayVolumeProgress(lastRow[0]);
+  const normalizedTodayVol = todayCandle.volume / volProgress;
+  const volRatio = avgVol20 > 0 ? Math.max(1, Math.round((normalizedTodayVol / avgVol20) * 100)) : 100;
 
-  // 시총 순위 숫자 추출 (예: "KOSPI 시총 12위" -> 12)
+  // 시총 순위 숫자 추출 (예: "KOSPI 시총 12위" -> 12) 및 코스피·코스닥 통합 시가총액(억원)
   const rankMatch = stock.mcapRank.match(/(\d+)위/);
   const mcapRankNum = rankMatch ? Number(rankMatch[1]) : 750;
+  const mcapEok = parseMcapEok(stock.mcapText);
 
   // 4대 전략 엄격 부합 여부 판정
   const isBreakout =
@@ -248,21 +295,45 @@ function evaluateStock(stock, indexOrder) {
 
   const isOversold = rsi <= 36.5 && changeRate >= 0.5 && todayCandle.close >= todayCandle.open;
 
-  // 1차 진입가(선취매 50%) / 2차 추가매수가(눌림목 50%) / 1차 목표가 / 손절 기준가 산출
+  // 확정 일봉 기준 14일 ATR(%) 및 직전 20일 고가/저가 산출 (타점 계산기와 기준 통일)
+  const histCandles = len > 1 ? rc.slice(0, len - 1) : rc;
+  const hLen = histCandles.length;
+  let histHigh20 = currentPrice;
+  let rangePctSum = 0;
+  let rangeCount = 0;
+  for (let i = Math.max(0, hLen - 20); i < hLen; i++) {
+    const h = histCandles[i][2];
+    const l = histCandles[i][3];
+    const c = histCandles[i][4] || currentPrice;
+    if (h > histHigh20) histHigh20 = h;
+    if (i >= hLen - 14 && c > 0) {
+      rangePctSum += (h - l) / c;
+      rangeCount++;
+    }
+  }
+  const histAtrPct = Math.min(0.058, Math.max(0.020, rangeCount > 0 ? rangePctSum / rangeCount : 0.028));
+
+  // 1차 진입가(선취매 50%) / 2차 추가매수가(눌림목 50%) / 1차 목표가 / ATR 기반 손절 기준가 산출
   const entryLow = roundToTick(currentPrice * 0.994);
   const entryHigh = currentPrice;
 
-  const candidateTarget = bbUpper && bbUpper > currentPrice * 1.05 ? bbUpper : currentPrice * 1.078;
-  const targetPrice = roundToTick(Math.min(currentPrice * 1.125, Math.max(currentPrice * 1.058, candidateTarget)));
+  const techTarget = Math.max(
+    bbUpper || 0,
+    histHigh20 || 0,
+    currentPrice * (1 + histAtrPct * 2.2)
+  );
+  const targetPrice = roundToTick(Math.min(currentPrice * 1.18, Math.max(currentPrice * 1.045, techTarget)));
 
-  // 손절 기준가: 현재가 대비 약 -4.1% (2차 매수 지지선 하향 이탈 시)
-  const stopPrice = roundToTick(currentPrice * 0.959);
+  // 손절 기준가: 종목별 확정 일봉 변동성(ATR) 기반 (-3.2% ~ -8.5%)
+  const stopDropPct = Math.min(0.085, Math.max(0.032, histAtrPct * 1.65));
+  const stopPrice = roundToTick(currentPrice * (1 - stopDropPct));
 
-  // 2차 매수가(눌림목 추가매수): 손절선 위 안전마진을 확보한 단기 이평선(5일/20일선) 또는 현재가 대비 약 -2.1% 눌림 지지 구간
-  let rawSecondEntry = currentPrice * 0.979;
-  if (ma5 >= currentPrice * 0.970 && ma5 <= currentPrice * 0.986) {
+  // 2차 매수가(눌림목 추가매수): 손절선 위 안전마진을 확보한 단기 이평선(5일/20일선) 또는 ATR 절반 눌림 지지 구간
+  const defaultDipFactor = 1 - Math.min(0.035, Math.max(0.018, histAtrPct * 0.8));
+  let rawSecondEntry = currentPrice * defaultDipFactor;
+  if (ma5 >= stopPrice * 1.015 && ma5 <= currentPrice * 0.986) {
     rawSecondEntry = ma5;
-  } else if (ma20 >= currentPrice * 0.970 && ma20 <= currentPrice * 0.986) {
+  } else if (ma20 >= stopPrice * 1.015 && ma20 <= currentPrice * 0.986) {
     rawSecondEntry = ma20;
   }
   const secondEntryPrice = roundToTick(Math.max(stopPrice * 1.015, Math.min(currentPrice * 0.986, rawSecondEntry)));
@@ -283,7 +354,7 @@ function evaluateStock(stock, indexOrder) {
   // 4대 세부 팩터 연속형(Continuous) 정밀 점수 계산 (각 25.0 ~ 98.5점, 소수점 1자리)
   const clampFactor = val => Math.round(Math.min(98.5, Math.max(25.0, val)) * 10) / 10;
 
-  // 1) 추세(Trend) 점수: 이평선 이격도, 정배열 스프레드, 10일 추세 기울기, 과열 감점 반영
+  // 1) 추세(Trend) 점수: 중기 정배열 스프레드 및 10일 추세 기울기 중심, 단기 과열 감점 반영
   const distMa5Pct = ma5 > 0 ? ((currentPrice - ma5) / ma5) * 100 : 0;
   const distMa20Pct = ma20 > 0 ? ((currentPrice - ma20) / ma20) * 100 : 0;
   const spread5_20Pct = ma20 > 0 ? ((ma5 - ma20) / ma20) * 100 : 0;
@@ -306,36 +377,38 @@ function evaluateStock(stock, indexOrder) {
   const rawTrend =
     52.0 +
     alignBonus +
-    Math.max(-12, Math.min(14, distMa5Pct * 2.4)) +
-    Math.max(-10, Math.min(13, spread5_20Pct * 1.9)) +
-    Math.max(-8, Math.min(10, spread20_60Pct * 1.15)) +
-    Math.max(-8, Math.min(9, roc10Pct * 0.55)) -
+    Math.max(-10, Math.min(11, distMa5Pct * 1.8)) +
+    Math.max(-10, Math.min(14, spread5_20Pct * 2.0)) +
+    Math.max(-8, Math.min(11, spread20_60Pct * 1.25)) +
+    Math.max(-8, Math.min(10, roc10Pct * 0.6)) -
     overheatPenalty;
   const factorTrend = clampFactor(rawTrend);
 
-  // 2) 거래량/수급(Volume) 점수: 로그 스케일 거래량비 + 최근 3일 수급 가속도 + 양봉 수급 결합 + 시총 유동성
-  const volRatioExact = avgVol20 > 0 ? (todayCandle.volume / avgVol20) * 100 : 100;
-  const recent3Vol = len >= 3 ? (rc[len - 1][5] + rc[len - 2][5] + rc[len - 3][5]) / 3 : todayCandle.volume;
+  // 2) 거래량/수급(Volume) 점수: 시간 보정 로그 거래량비 + 최근 3일 수급 가속도 + 방향성 수급 + 통합 시총 유동성
+  const volRatioExact = avgVol20 > 0 ? (normalizedTodayVol / avgVol20) * 100 : 100;
+  const recent3Vol = len >= 3 ? (normalizedTodayVol + rc[len - 2][5] + rc[len - 3][5]) / 3 : normalizedTodayVol;
   const volAccelRatio = avgVol20 > 0 ? recent3Vol / avgVol20 : 1;
   const logVolScore = Math.log10(Math.max(15, Math.min(900, volRatioExact)) / 100) * 34;
+  // 당일 등락률 중복 과대반영 완화 (거래량 자체 비중 강화)
   const dirVolBonus = changeRate >= 0
-    ? Math.min(16, changeRate * 2.1 * Math.min(1.8, volRatioExact / 100))
-    : Math.max(-16, changeRate * 2.3);
-  const liquidityScore = ((751 - Math.min(750, mcapRankNum)) / 750) * 6.5;
+    ? Math.min(10, changeRate * 1.2 * Math.min(1.6, volRatioExact / 100))
+    : Math.max(-10, changeRate * 1.4);
+  // 코스피·코스닥 통합 시가총액 로그 스케일 유동성 점수 (200억=0점 ~ 300조+=6.5점)
+  const liquidityScore = Math.max(0, Math.min(6.5, ((Math.log10(Math.max(200, mcapEok)) - 2.3) / 4.2) * 6.5));
 
   const rawVolume =
-    54.0 +
+    55.0 +
     logVolScore +
-    Math.max(-6, Math.min(10, (volAccelRatio - 1) * 8.5)) +
+    Math.max(-6, Math.min(12, (volAccelRatio - 1) * 9.5)) +
     dirVolBonus +
     liquidityScore;
   const factorVolume = clampFactor(rawVolume);
 
-  // 3) 모멘텀(Momentum: RSI + 가격대비 MACD bp + 오실레이터 가속도) 점수
+  // 3) 모멘텀(Momentum: 표준 Wilder RSI + 가격대비 MACD bp + 오실레이터 가속도) 점수
   let rsiCurveScore = 0;
   if (isOversold || (rsi <= 40 && changeRate > 0.3)) {
     // 과매도 반등 탄력 곡선 (RSI 28~36 구간에서 양봉 전환 시 고득점)
-    rsiCurveScore = 24.0 - Math.abs(rsi - 32.5) * 0.9 + Math.min(10, changeRate * 2.2);
+    rsiCurveScore = 24.0 - Math.abs(rsi - 32.5) * 0.9 + Math.min(8, changeRate * 1.6);
   } else {
     // 추세 모멘텀 곡선 (RSI 58.5 부근이 과열 없는 최적 탄력 구간)
     rsiCurveScore = 27.5 - Math.pow(rsi - 58.5, 2) * 0.085;
@@ -351,27 +424,27 @@ function evaluateStock(stock, indexOrder) {
     (macd.isExpanding && macd.rawHist > 0 ? 4.2 : 0);
   const factorMomentum = clampFactor(rawMomentum);
 
-  // 4) 캔들 패턴 & 손익비(Pattern) 점수: 캔들 몸통 비율, 고가 마감도(윗꼬리 제어), 적정 상승폭, 손익비(R/R)
+  // 4) 캔들 패턴 & 손익비(Pattern) 점수: 캔들 몸통 비율, 고가 마감도(윗꼬리 제어), 적정 상승폭, ATR 기반 손익비(R/R)
   const candleRange = Math.max(1, todayCandle.high - todayCandle.low);
   const bodySignedRatio = (todayCandle.close - todayCandle.open) / candleRange; // -1.0 ~ +1.0
   const closeLocation = (todayCandle.close - todayCandle.low) / candleRange;    // 0.0 ~ 1.0 (고가 마감일수록 1)
   const upperWickRatio = (todayCandle.high - Math.max(todayCandle.open, todayCandle.close)) / candleRange;
 
-  // 적정 상승률(1.5% ~ 5.5%) 우대, 상한가 근접 과열(>12%) 감점
+  // 적정 상승률(0.8% ~ 5.5%) 우대, 단기 급등 과열(>9%) 감점 (중복 가중치 완화)
   let gainQuality = 0;
-  if (changeRate >= 0.8 && changeRate <= 6.5) {
-    gainQuality = 14.0 - Math.abs(changeRate - 3.4) * 1.4;
-  } else if (changeRate > 6.5) {
-    gainQuality = Math.max(-10, 9.5 - (changeRate - 6.5) * 1.6);
+  if (changeRate >= 0.8 && changeRate <= 5.5) {
+    gainQuality = 7.5 - Math.abs(changeRate - 3.0) * 1.1;
+  } else if (changeRate > 5.5) {
+    gainQuality = Math.max(-8, 4.5 - (changeRate - 5.5) * 1.3);
   } else {
-    gainQuality = Math.max(-15, changeRate * 3.2);
+    gainQuality = Math.max(-9, changeRate * 2.0);
   }
 
-  const rrScore = Math.max(-5, Math.min(12, (rrRatio - 1.8) * 6.5));
+  const rrScore = Math.max(-6, Math.min(15, (rrRatio - 1.5) * 8.0));
   const rawPattern =
-    52.0 +
-    bodySignedRatio * 14.5 +
-    (closeLocation - 0.5) * 15.0 -
+    54.0 +
+    bodySignedRatio * 13.5 +
+    (closeLocation - 0.5) * 14.0 -
     upperWickRatio * 9.5 +
     gainQuality +
     rrScore;
@@ -384,18 +457,18 @@ function evaluateStock(stock, indexOrder) {
       factorMomentum * weights.momentum +
       factorPattern * weights.pattern) / totalWeight;
 
-  // 전략 시그널 부합도 가산 (고정 정수 상한 대신 정밀 가중치 부여)
+  // 전략 시그널 부합도 가산 (다중 충족 시 상한 4.5점으로 편향 제어)
   let strategyBonus = 0;
-  if (isBreakout) strategyBonus += 3.4;
-  if (isVolumeActive) strategyBonus += 2.8;
-  if (isPullback) strategyBonus += 2.2;
+  if (isBreakout) strategyBonus += 2.6;
+  if (isVolumeActive) strategyBonus += 2.2;
+  if (isPullback) strategyBonus += 2.4;
   if (isOversold) strategyBonus += 2.5;
+  strategyBonus = Math.min(4.5, strategyBonus);
 
   const preCalibratedScore = rawScore + strategyBonus;
-  const score = Math.round(Math.min(97.8, Math.max(30.0, preCalibratedScore)) * 10) / 10;
+  const score = Math.round(Math.min(97.5, Math.max(25.0, preCalibratedScore)) * 10) / 10;
 
   // 신규 진입 타이밍 진단 분류 (확정 일봉 기준)
-  const histCandles = len > 1 ? rc.slice(0, len - 1) : rc;
   const histMA5 = calcLatestSMA(histCandles, 5);
   const baseRefPrice = defaultEntrySnapshotByCode[stock.code] || currentPrice;
   const distHistMa5Pct = histMA5 > 0 ? ((baseRefPrice - histMA5) / histMA5) * 100 : 0;
@@ -565,12 +638,12 @@ function computeSectorMomentumAndApply(universe) {
     const avgVolRatio = g.count > 0 ? g.sumVolRatio / g.count : 100;
     const ma20Breadth = g.count > 0 ? (g.aboveMa20Count / g.count) * 100 : 50;
 
-    // 섹터 상대강도 지수: 평균 등락률(가중 40%) + 상승종목 확산도(30%) + 거래량 수급비(15%) + 20일선 안착률(15%)
+    // 섹터 상대강도 지수: 평균 등락률(30%) + 상승종목 확산도(30%) + 20일선 안착률(25%) + 거래량 수급비(15%)
     const rawStrength =
-      avgChange * 14.0 +
-      (advBreadth - 48.0) * 0.42 +
+      avgChange * 10.5 +
+      (advBreadth - 48.0) * 0.45 +
       (avgVolRatio - 95.0) * 0.14 +
-      (ma20Breadth - 48.0) * 0.22;
+      (ma20Breadth - 48.0) * 0.30;
 
     return {
       name: g.name,
@@ -764,42 +837,15 @@ function filterAndRankTop5() {
       a.indexOrder - b.indexOrder
   );
 
-  // 전체 모집단 최소~최대 원점수 스펙트럼 추출 후 Z-분포 + 비선형 순위 곡선 결합 보정
-  const maxRaw = sortedByOverall[0]?.preCalibratedScore || 90;
-  const minRaw = sortedByOverall[sortedByOverall.length - 1]?.preCalibratedScore || 40;
-  const rawSpan = Math.max(10, maxRaw - minRaw);
+  // 절대 점수 중심 보정 (85% 실제 팩터+섹터 점수 + 15% 완만한 백분위 보정)
+  // 하락장에서도 순위 때문에 인위적으로 95점이 부여되지 않고 실제 종목 강도를 정직하게 반영
   const totalN = sortedByOverall.length || 1500;
-
-  let prevOverallScore = 98.5;
   sortedByOverall.forEach((item, idx) => {
     item.overallQuantRank = idx + 1;
-    const normRaw = (item.preCalibratedScore - minRaw) / rawSpan; // 0.0 ~ 1.0
-
-    // 상위권 변별력을 넓히는 지수형 분포 곡선 (1위 ~96.6점, 2위 ~94.5점, 3위 ~92.6점, 4위 ~90.9점, 5위 ~89.3점...)
-    let topSpreadDrop = 0;
-    if (idx === 0) topSpreadDrop = 0;
-    else if (idx === 1) topSpreadDrop = 2.1;
-    else if (idx === 2) topSpreadDrop = 4.0;
-    else if (idx === 3) topSpreadDrop = 5.8;
-    else if (idx === 4) topSpreadDrop = 7.4;
-    else if (idx < 25) topSpreadDrop = 7.4 + (idx - 4) * 0.65;
-    else topSpreadDrop = 21.0 + Math.pow((idx - 25) / (totalN - 25), 0.72) * 44.0;
-
-    const blended = (34.0 + normRaw * 62.6) * 0.45 + (96.6 - topSpreadDrop) * 0.55;
-    let calibrated = Math.round(Math.min(96.8, Math.max(28.0, blended)) * 10) / 10;
-
-    // 상위 30위권 내 동점 방지 및 최소 간격 보장
-    if (idx > 0 && idx < 10) {
-      const minGap = idx <= 5 ? 1.6 : 0.7;
-      if (prevOverallScore - calibrated < minGap) {
-        calibrated = Math.round((prevOverallScore - minGap) * 10) / 10;
-      }
-    } else if (idx >= 10 && idx < 60 && calibrated >= prevOverallScore) {
-      calibrated = Math.round((prevOverallScore - 0.2) * 10) / 10;
-    }
-
-    item.score = calibrated;
-    prevOverallScore = calibrated;
+    const percentile = totalN > 1 ? 1 - idx / (totalN - 1) : 1.0; // 1.0(1위) ~ 0.0(최하위)
+    const relativeAdjust = (percentile - 0.5) * 6.0;              // -3.0 ~ +3.0점 완만한 상대 보정
+    const finalScore = item.preCalibratedScore + relativeAdjust;
+    item.score = Math.round(Math.min(97.5, Math.max(25.0, finalScore)) * 10) / 10;
   });
 
   // 시장/규모 및 섹터 필터 적용된 기본 모집단
@@ -882,39 +928,23 @@ function filterAndRankTop5() {
 
   const totalInMarket = marketFiltered.length;
   const matchedCount = matchedList.length;
-  const topPct = ((5 / totalInMarket) * 100).toFixed(1);
-  document.getElementById('funnelBadge').innerText = `상위 ${topPct}%`;
+  const shownCount = Math.min(5, totalInMarket);
+  const topPct = totalInMarket > 0
+    ? Math.min(100, (shownCount / totalInMarket) * 100).toFixed(1)
+    : '0.0';
+  document.getElementById('funnelBadge').innerText =
+    totalInMarket > 0 ? `상위 ${topPct}%` : '조건 부합 없음';
   document.getElementById('funnelDetailBar').innerHTML = `
     <span>모집단 <b>${totalInMarket.toLocaleString()}</b>종목</span>
     <span class="funnel-arrow">➔</span>
     <span>전략 부합 <b id="funnelMatchedCount">${matchedCount.toLocaleString()}</b>종목</span>
     <span class="funnel-arrow">➔</span>
-    <span class="funnel-highlight">최상위 <b>TOP 5</b></span>
+    <span class="funnel-highlight">최상위 <b>TOP ${shownCount}</b></span>
   `;
 
+  // 전략별 특화 정렬(strategySpecScore)로 TOP 5를 선정하되, 원본 종목의 종합 점수(score)는 인위적으로 덮어쓰지 않고 보존
   const combined = [...matchedList, ...fallbackList];
   currentTop5 = combined.slice(0, 5);
-
-  // 선택된 전략/시장 필터 내 TOP 5 종목들의 점수가 지나치게 촘촘하거나 역전되지 않도록 전략 적합도 기반 정밀 보정
-  if (currentTop5.length > 0 && currentStrategy !== 'all') {
-    const topBase = Math.min(96.4, Math.max(91.8, currentTop5[0].score + 3.2));
-    const stepDrops = [0, 2.2, 4.1, 5.9, 7.6];
-    currentTop5.forEach((s, i) => {
-      const indivJitter = ((s.factorTrend + s.factorVolume) % 0.7) - 0.3;
-      const targetS = topBase - stepDrops[i] + indivJitter * 0.4;
-      s.score = Math.round(Math.max(75.0, Math.min(96.6, targetS)) * 10) / 10;
-      if (i > 0 && currentTop5[i - 1].score - s.score < 1.4) {
-        s.score = Math.round((currentTop5[i - 1].score - 1.5) * 10) / 10;
-      }
-    });
-  } else if (currentTop5.length > 0) {
-    // 전체/시장 필터에서도 TOP 5 간 최소 1.5~2.2점 간격 보장
-    for (let i = 1; i < currentTop5.length; i++) {
-      if (currentTop5[i - 1].score - currentTop5[i].score < 1.5) {
-        currentTop5[i].score = Math.round((currentTop5[i - 1].score - 1.7) * 10) / 10;
-      }
-    }
-  }
 }
 
 // 좌측 TOP 5 카드, 비교 테이블 및 모바일 상단 TOP 5 빠른 전환 바 렌더링
@@ -1052,7 +1082,15 @@ function selectStock(stock, rank = null, options = {}) {
   const degPct = Math.min(98, stock.score);
   scoreCircle.style.background = `radial-gradient(circle, #1e293b 62%, transparent 63%), conic-gradient(#10b981 0% ${degPct}%, #262e3d ${degPct}% 100%)`;
   document.getElementById('detailSignalGrade').innerText =
-    stock.score >= 90 ? '최상위 강력 매수' : (stock.score >= 82 ? '강력 매수 시그널' : '매수 진입 유망');
+    stock.score >= 88
+      ? '최상위 강력 매수'
+      : stock.score >= 78
+        ? '강력 매수 시그널'
+        : stock.score >= 68
+          ? '매수 진입 유망'
+          : stock.score >= 55
+            ? '관망 · 조건부 진입'
+            : '주의 · 진입 보류';
 
   const reasonListEl = document.getElementById('detailReasonList');
   reasonListEl.innerHTML = stock.reasons.map(r => `<li>${r}</li>`).join('');
