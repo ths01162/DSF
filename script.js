@@ -290,23 +290,53 @@ const stockByCodeMap = new Map(
   (typeof REAL_STOCK_UNIVERSE !== 'undefined' ? REAL_STOCK_UNIVERSE : []).map(s => [s.code, s])
 );
 
-// 79개 세부 WICS 업종명을 14개 KRX 핵심 대분류 섹터로 빈틈없이 정규화
-function normalizeMacroSector(raw) {
+// 네이버 WICS 분류가 실제 주력 사업과 크게 어긋나는 대표 종목 보정 테이블
+const SECTOR_OVERRIDE_BY_CODE = {
+  '086520': '2차전지·전력기기',   // 에코프로 (WICS: 화학)
+  '003670': '2차전지·전력기기',   // 포스코퓨처엠 (WICS: 화학)
+  '005070': '2차전지·전력기기',   // 코스모신소재 (WICS: 화학)
+  '005420': '2차전지·전력기기',   // 코스모화학 (WICS: 화학)
+  '457190': '2차전지·전력기기',   // 이수스페셜티케미컬 (WICS: 화학)
+  '121600': '2차전지·전력기기',   // 나노신소재 (WICS: 화학)
+  '078600': '2차전지·전력기기',   // 대주전자재료 (WICS: 전자장비와기기)
+  '336370': '2차전지·전력기기',   // 솔루스첨단소재 (WICS: 전자장비와기기)
+  '065350': '2차전지·전력기기',   // 신성델타테크 (WICS: 가정용기기와용품 -> 2차전지·전장부품)
+  '042600': '2차전지·전력기기',   // 새로닉스 (WICS: 가정용기기와용품 -> 2차전지 소재)
+  '270660': '기계·건설·인프라',   // 에브리봇 (WICS: 가정용기기와용품 -> 로봇)
+  '140410': '제약·바이오·헬스',   // 메지온 (WICS: 식품)
+  '052020': '제약·바이오·헬스',   // 에스티큐브 (WICS: 판매업체)
+  '000670': '화학·철강·에너지소재', // 영풍 (WICS: 핸드셋)
+  '034730': '지주·복합기업',      // SK (WICS: 석유와가스)
+  '078930': '지주·복합기업',      // GS (WICS: 석유와가스)
+  '044820': '화장품·유통·소비재',  // 코스맥스비티아이 (WICS: 건강관리업체및서비스)
+  '033560': 'IT하드웨어·전자부품', // 블루콤 (WICS: 부동산)
+  '210980': '기계·건설·인프라',   // SK디앤디 (부동산 디벨로퍼)
+  '003480': '조선·방산·항공'      // 한진중공업홀딩스 (WICS: 가스유틸리티)
+};
+
+// 79개 세부 WICS 업종명을 14개 KRX 핵심 대분류 섹터로 정확히 정규화
+function normalizeMacroSector(raw, code = '') {
+  if (code && SECTOR_OVERRIDE_BY_CODE[code]) {
+    return SECTOR_OVERRIDE_BY_CODE[code];
+  }
   const s = String(raw || '');
+  if (/유틸리티|무선통신|다각화된통신/.test(s)) return '통신·유틸리티';
   if (/반도체/.test(s)) return '반도체·장비';
-  if (/전기제품|에너지장비|축전지|2차전지/.test(s)) return '2차전지·전력기기';
+  if (/전기장비|전기제품|에너지장비|축전지|2차전지|전력기기/.test(s)) return '2차전지·전력기기';
   if (/제약|생물공학|건강관리|생명과학|의료/.test(s)) return '제약·바이오·헬스';
-  if (/은행|증권|보험|카드|금융|창업투자|투신|리츠/.test(s)) return '금융·은행·증권';
+  if (/은행|증권|보험|카드|금융|창업투자|투신|리츠|부동산/.test(s)) return '금융·은행·증권';
   if (/자동차/.test(s)) return '자동차·부품';
   if (/조선|우주항공|국방|방산/.test(s)) return '조선·방산·항공';
-  if (/기계|건설|건축|엔지니어링|시멘트|상사|무역/.test(s)) return '기계·건설·인프라';
-  if (/양방향|미디어|인터넷|게임|소프트웨어|IT서비스|방송|엔터|광고|영화|출판|교육/.test(s)) return 'IT·플랫폼·게임·엔터';
-  if (/전자장비|디스플레이|핸드셋|전기장비|컴퓨터|통신장비|사무용전자|전자제품|IT하드웨어/.test(s)) return 'IT하드웨어·전자부품';
-  if (/화학|철강|비철금속|석유|가스|종이|목재|포장재|광물|에너지소재/.test(s)) return '화학·철강·에너지소재';
-  if (/화장품|섬유|의류|백화점|소매|유통|가정용|가구|호텔|레저|생물|소비재|백화점/.test(s)) return '화장품·유통·소비재';
   if (/식품|음료|담배|농업|식료/.test(s)) return '음식료·필수소비재';
+  if (/가정용기기/.test(s)) return 'IT하드웨어·전자부품';
+  if (/카탈로그소매|화장품|섬유|의류|백화점|소매|유통|가정용|가구|호텔|레저|소비재/.test(s)) return '화장품·유통·소비재';
+  if (/기계|건설|건축|엔지니어링|시멘트|상사|무역/.test(s)) return '기계·건설·인프라';
+  if (/판매업체/.test(s)) return '화장품·유통·소비재';
+  if (/양방향|미디어|인터넷|게임|소프트웨어|IT서비스|방송|엔터|광고|영화|출판|교육/.test(s)) return 'IT·플랫폼·게임·엔터';
+  if (/전자장비|디스플레이|핸드셋|컴퓨터|통신장비|사무용전자|전자제품|IT하드웨어/.test(s)) return 'IT하드웨어·전자부품';
+  if (/화학|철강|비철금속|석유|가스|종이|목재|포장재|광물|에너지소재/.test(s)) return '화학·철강·에너지소재';
   if (/해운|항공|육상|운수|운송|물류/.test(s)) return '해운·항공·운송';
-  if (/유틸리티|통신/.test(s)) return '통신·유틸리티';
+  if (/통신/.test(s)) return '통신·유틸리티';
   if (/복합기업|지주/.test(s)) return '지주·복합기업';
   return '기계·건설·인프라';
 }
@@ -694,7 +724,7 @@ function ensureDetailedSeries(stock) {
 function computeSectorMomentumAndApply(universe) {
   const groups = {};
   universe.forEach(s => {
-    s.sector = normalizeMacroSector(s.subSector || s.sector);
+    s.sector = normalizeMacroSector(s.subSector || s.sector, s.code);
     const sec = s.sector;
     if (!groups[sec]) {
       groups[sec] = {
@@ -776,7 +806,10 @@ function computeSectorMomentumAndApply(universe) {
     s.preCalibratedScore = s.preCalibratedScore + s.sectorDelta;
 
     const sign = s.sectorDelta >= 0 ? '+' : '';
-    const shortSec = s.sector.split('·')[0];
+    let shortSec = s.sector.split('·')[0];
+    if (s.sector === '화장품·유통·소비재' && !/화장품|코스맥스|실리콘투/.test(`${s.subSector || ''} ${s.name || ''}`)) {
+      shortSec = '유통·소비';
+    }
     const sectorTagText = `${shortSec} ${sign}${s.sectorDelta.toFixed(1)}점`;
     // 기존 두 번째 태그 앞에 섹터 가감점 태그 삽입
     s.tags = [

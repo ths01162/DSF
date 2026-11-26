@@ -42,34 +42,66 @@ def fetch_text(url, encoding="utf-8", timeout=10):
         return resp.read().decode(encoding, errors="ignore")
 
 
-def normalize_sector_name(raw_name: str) -> str:
+SECTOR_OVERRIDE_BY_CODE = {
+    "086520": "2차전지·전력기기",
+    "003670": "2차전지·전력기기",
+    "005070": "2차전지·전력기기",
+    "005420": "2차전지·전력기기",
+    "457190": "2차전지·전력기기",
+    "121600": "2차전지·전력기기",
+    "078600": "2차전지·전력기기",
+    "336370": "2차전지·전력기기",
+    "065350": "2차전지·전력기기",
+    "042600": "2차전지·전력기기",
+    "270660": "기계·건설·인프라",
+    "140410": "제약·바이오·헬스",
+    "052020": "제약·바이오·헬스",
+    "000670": "화학·철강·에너지소재",
+    "034730": "지주·복합기업",
+    "078930": "지주·복합기업",
+    "044820": "화장품·유통·소비재",
+    "033560": "IT하드웨어·전자부품",
+    "210980": "기계·건설·인프라",
+    "003480": "조선·방산·항공",
+}
+
+
+def normalize_sector_name(raw_name: str, code: str = "") -> str:
+    if code and code in SECTOR_OVERRIDE_BY_CODE:
+        return SECTOR_OVERRIDE_BY_CODE[code]
+    if re.search(r"유틸리티|무선통신|다각화된통신", raw_name):
+        return "통신·유틸리티"
     if re.search(r"반도체", raw_name):
         return "반도체·장비"
-    if re.search(r"전기제품|에너지장비|축전지|2차전지", raw_name):
+    if re.search(r"전기장비|전기제품|에너지장비|축전지|2차전지|전력기기", raw_name):
         return "2차전지·전력기기"
     if re.search(r"제약|생물공학|건강관리|생명과학|의료", raw_name):
         return "제약·바이오·헬스"
-    if re.search(r"은행|증권|보험|카드|금융|창업투자|투신|리츠", raw_name):
+    if re.search(r"은행|증권|보험|카드|금융|창업투자|투신|리츠|부동산", raw_name):
         return "금융·은행·증권"
     if re.search(r"자동차", raw_name):
         return "자동차·부품"
     if re.search(r"조선|우주항공|국방|방산", raw_name):
         return "조선·방산·항공"
+    if re.search(r"식품|음료|담배|농업|식료", raw_name):
+        return "음식료·필수소비재"
+    if re.search(r"가정용기기", raw_name):
+        return "IT하드웨어·전자부품"
+    if re.search(r"카탈로그소매|화장품|섬유|의류|백화점|소매|유통|가정용|가구|호텔|레저|소비재", raw_name):
+        return "화장품·유통·소비재"
     if re.search(r"기계|건설|건축|엔지니어링|시멘트|상사|무역", raw_name):
         return "기계·건설·인프라"
+    if re.search(r"판매업체", raw_name):
+        return "화장품·유통·소비재"
     if re.search(r"양방향|미디어|인터넷|게임|소프트웨어|IT서비스|방송|엔터|광고|영화|출판|교육", raw_name):
         return "IT·플랫폼·게임·엔터"
-    if re.search(r"전자장비|디스플레이|핸드셋|전기장비|컴퓨터|통신장비|사무용전자|전자제품|IT하드웨어", raw_name):
+    if re.search(r"전자장비|디스플레이|핸드셋|컴퓨터|통신장비|사무용전자|전자제품|IT하드웨어", raw_name):
         return "IT하드웨어·전자부품"
     if re.search(r"화학|철강|비철금속|석유|가스|종이|목재|포장재|광물|에너지소재", raw_name):
         return "화학·철강·에너지소재"
-    if re.search(r"화장품|섬유|의류|백화점|소매|유통|가정용|가구|호텔|레저|생물|소비재", raw_name):
-        return "화장품·유통·소비재"
-    if re.search(r"식품|음료|담배|농업|식료", raw_name):
-        return "음식료·필수소비재"
     if re.search(r"해운|항공|육상|운수|운송|물류", raw_name):
         return "해운·항공·운송"
-    if re.search(r"유틸리티|통신", raw_name):
+    if re.search(r"통신", raw_name):
         return "통신·유틸리티"
     if re.search(r"복합기업|지주", raw_name):
         return "지주·복합기업"
@@ -187,7 +219,7 @@ def fetch_sector_map():
         for fut in as_completed(futures):
             for c, sub in fut.result():
                 code_to_sub[c] = sub
-                code_to_sector[c] = normalize_sector_name(sub)
+                code_to_sector[c] = normalize_sector_name(sub, c)
 
     return code_to_sector, code_to_sub
 
